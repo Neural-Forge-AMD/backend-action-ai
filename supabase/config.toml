@@ -1,0 +1,4 @@
+project_id = "backend-action-ai"
+
+[functions.marfa-fetch-places]
+verify_jwt = true

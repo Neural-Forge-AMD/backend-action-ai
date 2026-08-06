@@ -33,8 +33,4 @@ export default defineConfig(() => ({
       include: '**/*.svg?react',
     }),
   ],
-  server: {
-    allowedHosts: true as const,
-    hmr: false,
-  },
 }))

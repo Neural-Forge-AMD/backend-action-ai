@@ -1,198 +1,178 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
-};
+import {
+  pickBestResult,
+  type PlaceInput,
+  type PlaceResult,
+  validatePlaces,
+} from "../_shared/places.ts";
 
 const SERPAPI_BASE = "https://serpapi.com/search.json";
 const MARFA_LL = "@30.3114,-104.0208,14z";
+const FETCH_TIMEOUT_MS = 8_000;
+const LOCAL_ORIGINS = new Set([
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+]);
 
-export interface PlaceInput {
-  name: string;
-  address?: string;
-  rating?: number | null;
-  place_id?: string;
+function allowedOrigins(): Set<string> {
+  const configured = (Deno.env.get("ALLOWED_ORIGINS") ?? "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+  return new Set([...LOCAL_ORIGINS, ...configured]);
 }
 
-export interface PlaceResult {
-  name: string;
-  address: string | null;
-  rating: number | null;
-  place_id: string | null;
-  /** If we couldn't search Google Maps (API error), we fell back to the input data. */
-  fallback_data?: boolean;
-}
-
-function normalise(str: string | null | undefined): string {
-  return (str ?? "").toLowerCase().replace(/[,\\.\\s]+/g, " ").trim();
-}
-
-/** Check whether `resultAddr` roughly matches `targetAddr` (same street number + overlapping name token). */
-function addressesMatch(target: string | undefined, result: string | null | undefined): boolean {
-  if (!target || !result) return false;
-  const t = normalise(target);
-  const r = normalise(result);
-
-  // If target has a street number, check it appears in the result
-  const tTokens = t.split(/\s+/);
-  const firstToken = tTokens[0];
-  if (/^\d+$/.test(firstToken)) {
-    if (!r.includes(firstToken)) return false;
-    // Then check at least one meaningful name token overlaps
-    for (const token of tTokens.slice(1, 4)) {
-      if (token.length > 3 && r.includes(token)) return true;
-    }
-    return false;
+function corsHeaders(origin: string | null): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Access-Control-Allow-Headers":
+      "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Max-Age": "86400",
+    "Vary": "Origin",
+  };
+  if (origin && allowedOrigins().has(origin)) {
+    headers["Access-Control-Allow-Origin"] = origin;
   }
-  // Fall back to substring match
-  return r.includes(t) || t.includes(r);
+  return headers;
 }
 
-/**
- * Search Google Maps via SerpApi for a place by name.
- * Returns the raw local_results array, or null on error / zero results.
- */
+function jsonResponse(
+  body: Record<string, unknown>,
+  status: number,
+  headers: Record<string, string>,
+): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
+  });
+}
+
+function jwtRole(authorization: string | null): string | null {
+  const match = authorization?.match(/^Bearer\s+([^\s]+)$/i);
+  if (!match) return null;
+
+  try {
+    const payloadPart = match[1].split(".")[1];
+    if (!payloadPart) return null;
+    const base64 = payloadPart.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
+    const payload = JSON.parse(atob(padded)) as Record<string, unknown>;
+    if (typeof payload.exp === "number" && payload.exp <= Date.now() / 1000) return null;
+    return typeof payload.role === "string" ? payload.role : null;
+  } catch {
+    return null;
+  }
+}
+
 async function fetchRawResults(
-  name: string,
+  place: PlaceInput,
   apiKey: string,
 ): Promise<Array<Record<string, unknown>> | null> {
   const params = new URLSearchParams({
     engine: "google_maps",
-    q: name,
+    q: [place.name, place.address].filter(Boolean).join(" "),
     ll: MARFA_LL,
     type: "search",
     hl: "en",
     google_domain: "google.com",
     api_key: apiKey,
   });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
   try {
-    const res = await fetch(`${SERPAPI_BASE}?${params}`, {
-      headers: { "Content-Type": "application/json" },
+    const response = await fetch(`${SERPAPI_BASE}?${params}`, {
+      signal: controller.signal,
     });
-    const data: Record<string, unknown> = await res.json();
+    if (!response.ok) {
+      console.warn("SerpApi HTTP error for", place.name, ":", response.status);
+      return null;
+    }
 
+    const data = await response.json() as Record<string, unknown>;
     if (data.error) {
-      console.warn("SerpApi error for", name, ":", data.error);
+      console.warn("SerpApi error for", place.name, ":", data.error);
       return null;
     }
 
-    const results = data.local_results as Array<Record<string, unknown>> | undefined;
-    if (!results || results.length === 0) {
-      return null;
-    }
-    return results;
-  } catch (err) {
-    console.warn("Network error for", name, ":", String(err));
+    return Array.isArray(data.local_results) && data.local_results.length > 0
+      ? data.local_results as Array<Record<string, unknown>>
+      : null;
+  } catch (error) {
+    console.warn("SerpApi request failed for", place.name, ":", String(error));
     return null;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
-function pickBestResult(
-  results: Array<Record<string, unknown>>,
-  knownAddress?: string,
-): PlaceResult | null {
-  // Pass 1: exact address match (scans ALL results)
-  if (knownAddress) {
-    for (const r of results) {
-      if (addressesMatch(knownAddress, r.address as string | undefined)) {
-        return {
-          name: (r.title as string) ?? "",
-          address: (r.address as string) ?? knownAddress,
-          rating: (r.rating as number) ?? null,
-          place_id: (r.place_id as string) ?? null,
-        };
-      }
-    }
-  }
-
-  // Pass 2: first result that is definitely in Marfa, TX
-  const marfaResult = results.find((r) => {
-    const addr = (r.address as string) ?? "";
-    return addr.includes("Marfa, TX") || addr.includes("Marfa, Texas");
-  });
-  if (marfaResult) {
-    return {
-      name: (marfaResult.title as string) ?? "",
-      address: (marfaResult.address as string) ?? null,
-      rating: (marfaResult.rating as number) ?? null,
-      place_id: (marfaResult.place_id as string) ?? null,
-    };
-  }
-
-  // Pass 3: nothing matched Marfa — return null so caller falls back to input data.
-  return null;
+function fallbackResult(place: PlaceInput): PlaceResult {
+  return {
+    name: place.name,
+    address: place.address ?? null,
+    rating: place.rating ?? null,
+    place_id: place.place_id ?? null,
+    fallback_data: true,
+  };
 }
 
-Deno.serve(async (req: Request) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, { status: 200, headers: corsHeaders });
+Deno.serve(async (request: Request) => {
+  const origin = request.headers.get("Origin");
+  const headers = corsHeaders(origin);
+
+  if (origin && !allowedOrigins().has(origin)) {
+    return jsonResponse({ error: "Origin is not allowed" }, 403, headers);
+  }
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers });
+  }
+  if (request.method !== "POST") {
+    return new Response(JSON.stringify({ error: "Method not allowed" }), {
+      status: 405,
+      headers: {
+        ...headers,
+        "Allow": "POST, OPTIONS",
+        "Content-Type": "application/json; charset=utf-8",
+      },
+    });
+  }
+
+  // Supabase's gateway verifies the signature; this additionally rejects anon tokens.
+  const role = jwtRole(request.headers.get("Authorization"));
+  if (role !== "authenticated" && role !== "service_role") {
+    return jsonResponse({ error: "Authentication required" }, 401, headers);
   }
 
   const apiKey = Deno.env.get("SERPAPI_KEY");
   if (!apiKey) {
-    return new Response(
-      JSON.stringify({ error: "SERPAPI_KEY not configured on server" }),
-      {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      },
-    );
+    return jsonResponse({ error: "Server is missing SERPAPI_KEY" }, 500, headers);
   }
 
-  let body: { places: PlaceInput[] };
+  let body: unknown;
   try {
-    body = await req.json();
+    body = await request.json();
   } catch {
-    return new Response(
-      JSON.stringify({ error: "Invalid JSON body" }),
-      { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-    );
+    return jsonResponse({ error: "Invalid JSON body" }, 400, headers);
   }
 
-  const { places } = body;
-  if (!Array.isArray(places) || places.length === 0) {
-    return new Response(
-      JSON.stringify({ error: "Provide at least one place" }),
-      { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-    );
+  const placesValue = body && typeof body === "object"
+    ? (body as Record<string, unknown>).places
+    : undefined;
+  const validation = validatePlaces(placesValue);
+  if (!validation.ok) {
+    return jsonResponse({ error: validation.error }, 400, headers);
   }
 
-  // Serialise searches so we don't race SerpApi rate limits
+  // Keep requests serial to avoid short bursts against SerpApi's quota.
   const results: PlaceResult[] = [];
-  for (const place of places) {
-    const rawResults = await fetchRawResults(place.name, apiKey);
-
-    if (rawResults) {
-      const chosen = pickBestResult(rawResults, place.address);
-      if (chosen) {
-        results.push(chosen);
-      } else {
-        // Results existed but none matched address or Marfa — fallback
-        results.push({
-          name: place.name,
-          address: place.address ?? null,
-          rating: place.rating ?? null,
-          place_id: place.place_id ?? null,
-          fallback_data: true,
-        });
-      }
-    } else {
-      // No results from SerpApi at all — fallback to provided data
-      results.push({
-        name: place.name,
-        address: place.address ?? null,
-        rating: place.rating ?? null,
-        place_id: place.place_id ?? null,
-        fallback_data: true,
-      });
-    }
+  for (const place of validation.places) {
+    const rawResults = await fetchRawResults(place, apiKey);
+    const chosen = rawResults
+      ? pickBestResult(rawResults, place.address)
+      : null;
+    results.push(chosen ?? fallbackResult(place));
   }
 
-  return new Response(JSON.stringify({ results }), {
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
-  });
+  return jsonResponse({ results }, 200, headers);
 });

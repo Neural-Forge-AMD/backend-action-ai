@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"]
+  },
+  "include": [
+    "supabase/functions/**/*.ts",
+    "supabase/functions/types.d.ts",
+    "tests/**/*.ts"
+  ]
+}
