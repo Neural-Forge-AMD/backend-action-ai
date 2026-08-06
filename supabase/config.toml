@@ -2,3 +2,6 @@ project_id = "backend-action-ai"
 
 [functions.marfa-fetch-places]
 verify_jwt = true
+
+[functions.price-change-stream]
+verify_jwt = true

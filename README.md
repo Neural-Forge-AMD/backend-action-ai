@@ -1,61 +1,137 @@
 # Marfa Place Finder
 
-A small React application backed by a Supabase Edge Function. Authenticated users can submit up to 10 place names and optional addresses. The function searches Google Maps through SerpApi, prefers an address match in Marfa, Texas, and clearly marks original input used as fallback data.
+A React application backed by Supabase Edge Functions. It supports manual Google Maps enrichment and an automated Biggie → database trigger → Gemini recommendation → SSE frontend pipeline for competitor price changes.
+
+Price-change automation owner: [@Fidan6557](https://github.com/Fidan6557).
+
+## Automated price-change flow
+
+```text
+Biggie scrape
+  → biggie_price_history INSERT
+  → Postgres trigger compares the newest and previous price
+  → changed prices enter competitor_price_change_events
+  → frontend opens the SSE stream as soon as the app loads
+  → server waits 3 seconds, claims the event and calls Gemini once
+  → final JSON is stored and pushed to every connected frontend
+```
+
+The first observation and repeated observations with the same price produce no event. SSE heartbeat comments keep the connection alive but are ignored by the frontend, so unchanged prices remain quiet.
 
 ## Requirements
 
 - Node.js 20.19+ or 22.12+
 - A Supabase project with email/password authentication enabled
-- A SerpApi API key
-- Supabase CLI for local function development and deployment
+- Supabase CLI
+- A SerpApi API key for manual place enrichment
+- A Gemini API key from Google AI Studio for price recommendations
 
 ## Local setup
 
-1. Install the frontend dependencies:
+1. Install dependencies:
 
    ```bash
    npm ci
    ```
 
-2. Copy `.env.example` to `.env.local` and provide the project URL and public anon key:
+2. Copy `.env.example` to `.env.local` and set the frontend values:
 
    ```env
    VITE_SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
    VITE_SUPABASE_ANON_KEY=YOUR_SUPABASE_ANON_KEY
    ```
 
-3. Copy `supabase/.env.example` to `supabase/.env.local`, add the SerpApi key, and list every browser origin allowed to invoke the function.
+3. Copy `supabase/.env.example` to `supabase/.env.local` and set the server-only keys. Never prefix `SERPAPI_KEY`, `GEMINI_API_KEY`, or the service-role key with `VITE_`.
 
-4. Serve the Edge Function locally:
+4. Apply the database migration:
 
    ```bash
-   supabase functions serve marfa-fetch-places --env-file supabase/.env.local
+   supabase link --project-ref YOUR_PROJECT_REF
+   supabase db push
    ```
 
-5. Start the frontend:
+5. Serve both Edge Functions locally:
+
+   ```bash
+   supabase functions serve --env-file supabase/.env.local
+   ```
+
+6. Start the frontend:
 
    ```bash
    npm run dev
    ```
 
-The local browser origins `http://localhost:5173` and `http://127.0.0.1:5173` are allowed automatically.
+The local origins `http://localhost:5173` and `http://127.0.0.1:5173` are allowed automatically.
 
-## Deploy the function
+## Biggie database contract
 
-Link the Supabase project, store server-only secrets, then deploy:
+Biggie must append every scrape to `public.biggie_price_history` using the Supabase service role. Required columns are `competitor_name`, `item_name`, and `price`; `currency`, `source_url`, `scraped_at`, and `raw_payload` are optional.
 
-```bash
-supabase link --project-ref YOUR_PROJECT_REF
-supabase secrets set SERPAPI_KEY=YOUR_SERPAPI_KEY
-supabase secrets set ALLOWED_ORIGINS=https://your-app.example.com
-supabase functions deploy marfa-fetch-places
+Example acceptance data:
+
+```sql
+-- First observation: quiet.
+insert into public.biggie_price_history
+  (competitor_name, item_name, price, currency)
+values
+  ('Coyote Coffee', 'Latte', 4.50, 'USD');
+
+-- Same price: still quiet.
+insert into public.biggie_price_history
+  (competitor_name, item_name, price, currency)
+values
+  ('Coyote Coffee', 'Latte', 4.50, 'USD');
+
+-- Changed price: creates exactly one queued event.
+insert into public.biggie_price_history
+  (competitor_name, item_name, price, currency)
+values
+  ('Coyote Coffee', 'Latte', 5.00, 'USD');
 ```
 
-`supabase/config.toml` enables JWT verification. The function also requires an `authenticated` user or `service_role` token; the public anon role is rejected. Never expose `SERPAPI_KEY` in a `VITE_` environment variable.
+The migration is in `supabase/migrations/202608060001_price_change_events.sql`. Tables have RLS enabled and are not readable by browser roles. Queue RPC functions are restricted to `service_role`.
 
-## API shape
+## SSE contract
 
-Authenticated `POST` request body:
+The frontend opens this automatically with the public Supabase anon token, then reconnects with the authenticated user token after sign-in:
+
+```text
+GET /functions/v1/price-change-stream
+Accept: text/event-stream
+Authorization: Bearer <anon-or-authenticated-access-token>
+```
+
+The stream waits three seconds before its first database pull. It uses `Last-Event-ID` on reconnect, and one client generates each AI recommendation while all clients receive the stored result.
+
+Example event:
+
+```text
+id: 42
+event: price-change
+data: {"type":"competitor_price_change","event_id":42,"competitor":"Coyote Coffee","item":"Latte","price":{"previous":4.5,"current":5,"currency":"USD","change":0.5,"percent":11.11,"direction":"increased"},"observed_at":"2026-08-06T12:00:00.000Z","source_url":null,"recommendation":{"text":"Hold your latte price and emphasize value, or test a breakfast bundle before matching the increase.","model":"gemini-3.5-flash-lite"}}
+```
+
+The frontend consumes the stream with authenticated `fetch` rather than native `EventSource`, because native `EventSource` cannot attach the Supabase authorization header.
+
+## Deploy
+
+Store secrets and deploy both functions:
+
+```bash
+supabase secrets set SERPAPI_KEY=YOUR_SERPAPI_KEY
+supabase secrets set GEMINI_API_KEY=YOUR_GEMINI_API_KEY
+supabase secrets set GEMINI_MODEL=gemini-3.5-flash-lite
+supabase secrets set ALLOWED_ORIGINS=https://your-app.example.com
+supabase functions deploy marfa-fetch-places
+supabase functions deploy price-change-stream
+```
+
+Supabase supplies `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` to the Edge Function environment. `supabase/config.toml` enables gateway JWT verification. The live stream accepts a verified project anon token so the three-second judge flow starts immediately on page load; manual place enrichment still requires an authenticated user. AI enrichment is claimed and stored once per database event, so reconnects do not repeat the model call.
+
+## Manual place-enrichment API
+
+Authenticated request:
 
 ```json
 {
@@ -68,28 +144,14 @@ Authenticated `POST` request body:
 }
 ```
 
-Successful response:
-
-```json
-{
-  "results": [
-    {
-      "name": "The Sentinel",
-      "address": "209 West El Paso Street, Marfa, TX",
-      "rating": 4.6,
-      "place_id": "example"
-    }
-  ]
-}
-```
-
-`fallback_data` is only present and `true` when the external lookup fails or no suitable Marfa result is found.
+`fallback_data` is present and `true` when the external lookup fails or no suitable Marfa result is found.
 
 ## Checks
 
 ```bash
-npm test          # address matching, validation, and result selection
-npm run typecheck # frontend and Edge Function TypeScript
+npm test          # matching, queue payload, Gemini response, and SSE parsing tests
+npm run typecheck # frontend and both Edge Functions
 npm run build     # production frontend bundle
 npm run check     # all checks above
+supabase test db  # trigger behavior against local Postgres
 ```

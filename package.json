@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.edge.json",
-    "test": "tsx --test tests/places.test.ts",
+    "test": "tsx --test tests/places.test.ts tests/price-change.test.ts",
     "check": "npm run typecheck && npm test && npm run build"
   },
   "dependencies": {
