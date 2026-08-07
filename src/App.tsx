@@ -1,5 +1,4 @@
 import { useEffect, useState, type FormEvent } from "react";
-import type { Session } from "@supabase/supabase-js";
 
 import {
   connectPriceChangeStream,
@@ -47,13 +46,11 @@ function money(value: number, currency: string): string {
 
 function LivePriceAlert({
   event,
-  floating = false,
 }: {
   event: PriceChangePayload;
-  floating?: boolean;
 }) {
   return (
-    <section className={`live-alert${floating ? " floating" : ""}`} aria-live="assertive">
+    <section className="live-alert" aria-live="assertive">
       <div className="live-alert-summary">
         <p className="eyebrow">Live competitor change</p>
         <div className="live-alert-title">
@@ -88,13 +85,6 @@ function LivePriceAlert({
 }
 
 export default function App() {
-  const [session, setSession] = useState<Session | null>(null);
-  const [authReady, setAuthReady] = useState(false);
-  const [authMode, setAuthMode] = useState<"signin" | "signup">("signin");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [authBusy, setAuthBusy] = useState(false);
-  const [authMessage, setAuthMessage] = useState<string | null>(null);
   const [places, setPlaces] = useState<DraftPlace[]>(() => [newPlace()]);
   const [results, setResults] = useState<PlaceResult[]>([]);
   const [searchBusy, setSearchBusy] = useState(false);
@@ -103,60 +93,16 @@ export default function App() {
   const [liveEvent, setLiveEvent] = useState<PriceChangePayload | null>(null);
 
   useEffect(() => {
-    const client = supabase;
-    if (!client) {
-      setAuthReady(true);
-      return;
-    }
-
-    void client.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-      setAuthReady(true);
-    });
-    const { data: listener } = client.auth.onAuthStateChange((_event, nextSession) => {
-      setSession(nextSession);
-      setAuthReady(true);
-    });
-
-    return () => listener.subscription.unsubscribe();
-  }, []);
-
-  useEffect(() => {
     if (!supabaseUrl || !supabaseAnonKey) return;
     return connectPriceChangeStream({
       supabaseUrl,
       anonKey: supabaseAnonKey,
-      accessToken: session?.access_token ?? supabaseAnonKey,
+      accessToken: supabaseAnonKey,
       onEvent: setLiveEvent,
       onStatus: setLiveStatus,
       onError: (error) => console.warn("Price change stream:", error.message),
     });
-  }, [session]);
-
-  async function handleAuth(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const client = supabase;
-    if (!client) return;
-
-    setAuthBusy(true);
-    setAuthMessage(null);
-    try {
-      if (authMode === "signin") {
-        const { error } = await client.auth.signInWithPassword({ email, password });
-        if (error) throw error;
-      } else {
-        const { data, error } = await client.auth.signUp({ email, password });
-        if (error) throw error;
-        if (!data.session) {
-          setAuthMessage("Check your email to confirm the account, then sign in.");
-        }
-      }
-    } catch (error) {
-      setAuthMessage(errorMessage(error));
-    } finally {
-      setAuthBusy(false);
-    }
-  }
+  }, []);
 
   function updatePlace(id: string, field: "name" | "address", value: string) {
     setPlaces((current) =>
@@ -178,7 +124,7 @@ export default function App() {
   async function handleSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const client = supabase;
-    if (!client || !session) return;
+    if (!client) return;
 
     const payload = places.map(({ name, address }) => ({
       name: name.trim(),
@@ -221,10 +167,6 @@ export default function App() {
     }
   }
 
-  if (!authReady) {
-    return <main className="app-shell"><div className="loader" aria-label="Loading" /></main>;
-  }
-
   if (supabaseConfigError) {
     return (
       <main className="app-shell">
@@ -235,66 +177,6 @@ export default function App() {
           <code>Copy .env.example to .env.local</code>
         </section>
       </main>
-    );
-  }
-
-  if (!session) {
-    return (
-      <>
-        <main className="app-shell auth-shell">
-          <section className="auth-intro">
-            <p className="eyebrow">Marfa place finder</p>
-            <h1>Reliable place data, without the guesswork.</h1>
-            <p>Match local names and addresses against current Google Maps results.</p>
-          </section>
-          <section className="auth-card">
-            <div className="auth-tabs" aria-label="Authentication mode">
-              <button
-                className={authMode === "signin" ? "active" : ""}
-                type="button"
-                onClick={() => { setAuthMode("signin"); setAuthMessage(null); }}
-              >
-                Sign in
-              </button>
-              <button
-                className={authMode === "signup" ? "active" : ""}
-                type="button"
-                onClick={() => { setAuthMode("signup"); setAuthMessage(null); }}
-              >
-                Create account
-              </button>
-            </div>
-            <form onSubmit={handleAuth} className="auth-form">
-              <label>
-                Email
-                <input
-                  type="email"
-                  autoComplete="email"
-                  value={email}
-                  onChange={(event) => setEmail(event.target.value)}
-                  required
-                />
-              </label>
-              <label>
-                Password
-                <input
-                  type="password"
-                  autoComplete={authMode === "signin" ? "current-password" : "new-password"}
-                  minLength={6}
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  required
-                />
-              </label>
-              {authMessage && <p className="form-message" role="status">{authMessage}</p>}
-              <button className="primary-button" disabled={authBusy} type="submit">
-                {authBusy ? "Please wait…" : authMode === "signin" ? "Sign in" : "Create account"}
-              </button>
-            </form>
-          </section>
-        </main>
-        {liveEvent && <LivePriceAlert event={liveEvent} floating />}
-      </>
     );
   }
 
@@ -313,8 +195,6 @@ export default function App() {
             <i aria-hidden="true" />
             {liveStatus === "listening" ? "Live" : liveStatus}
           </span>
-          <span>{session.user.email}</span>
-          <button type="button" onClick={() => void supabase?.auth.signOut()}>Sign out</button>
         </div>
       </header>
 

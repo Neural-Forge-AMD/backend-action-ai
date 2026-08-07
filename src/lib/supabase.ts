@@ -8,11 +8,6 @@ export const supabaseConfigError = !supabaseUrl || !supabaseAnonKey
   : null;
 
 export const supabase = supabaseUrl && supabaseAnonKey
-  ? createClient(supabaseUrl, supabaseAnonKey, {
-      auth: {
-        persistSession: true,
-        autoRefreshToken: true,
-        detectSessionInUrl: true,
-      },
-    })
+  ? createClient(supabaseUrl, supabaseAnonKey)
   : null;
+
