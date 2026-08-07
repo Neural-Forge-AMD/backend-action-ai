@@ -85,6 +85,8 @@ function LivePriceAlert({
 }
 
 export default function App() {
+  const [currentPage, setCurrentPage] = useState<"landing" | "app">("landing");
+  // ponytail: using simple React state for view switching; react-router can be added if deep URL routing is required.
   const [places, setPlaces] = useState<DraftPlace[]>(() => [newPlace()]);
   const [results, setResults] = useState<PlaceResult[]>([]);
   const [searchBusy, setSearchBusy] = useState(false);
@@ -180,10 +182,79 @@ export default function App() {
     );
   }
 
+  if (currentPage === "landing") {
+    return (
+      <main className="landing-shell">
+        <header className="landing-topbar">
+          <div className="brand-group">
+            <p className="brand-mark">M</p>
+            <strong>Marfa AI Platform</strong>
+          </div>
+          <button
+            className="secondary-button header-cta"
+            onClick={() => setCurrentPage("app")}
+          >
+            Explore App →
+          </button>
+        </header>
+
+        <section className="hero-section">
+          <div className="hero-badge">Demo Version · Judge Preview</div>
+          <h1 className="hero-title">
+            Real-Time Location Enrichment &amp; Competitor Intelligence
+          </h1>
+          <p className="hero-description">
+            Welcome judges! Experience our end-to-end platform for Google Maps place resolution,
+            live competitor price streaming, and AI-driven pricing recommendations.
+          </p>
+          <div className="hero-actions">
+            <button
+              className="primary-button explore-button"
+              onClick={() => setCurrentPage("app")}
+            >
+              Explore Demo →
+            </button>
+          </div>
+        </section>
+
+        <section className="features-grid">
+          <article className="feature-card">
+            <div className="feature-icon">📍</div>
+            <h3>Location Enrichment</h3>
+            <p>Batch query and resolve place names with high-confidence Google Maps metadata & ratings.</p>
+          </article>
+
+          <article className="feature-card">
+            <div className="feature-icon">⚡</div>
+            <h3>Live Competitor Stream</h3>
+            <p>Real-time event stream monitoring competitor price movements live with zero latency.</p>
+          </article>
+
+          <article className="feature-card">
+            <div className="feature-icon">🤖</div>
+            <h3>AI Recommendations</h3>
+            <p>Instant Gemini AI pricing strategy suggestions attached to every live market shift.</p>
+          </article>
+        </section>
+
+        <footer className="landing-footer">
+          <p>Marfa AI Platform · Built for Hackathon Demo</p>
+        </footer>
+      </main>
+    );
+  }
+
   return (
     <main className="dashboard-shell">
       <header className="topbar">
         <div>
+          <button
+            className="nav-back-button"
+            onClick={() => setCurrentPage("landing")}
+            title="Return to Landing Page"
+          >
+            ← Home
+          </button>
           <p className="brand-mark">M</p>
           <div>
             <strong>Marfa place finder</strong>
@@ -300,3 +371,4 @@ export default function App() {
     </main>
   );
 }
+
