@@ -24,15 +24,27 @@ test("addressesMatch requires the full street number and a useful name token", (
 });
 
 test("validatePlaces trims valid input and rejects malformed or oversized batches", () => {
-  assert.deepEqual(validatePlaces([{ name: "  The Sentinel  ", address: " 209 W El Paso St " }]), {
+  assert.deepEqual(validatePlaces([{
+    name: "  The Sentinel  ",
+    address: " 209 W El Paso St ",
+    role: "competitor",
+  }]), {
     ok: true,
-    places: [{ name: "The Sentinel", address: "209 W El Paso St" }],
+    places: [{
+      name: "The Sentinel",
+      address: "209 W El Paso St",
+      role: "competitor",
+    }],
   });
   assert.deepEqual(validatePlaces([{ name: "Test", rating: 9 }]), {
     ok: false,
     error: "places[0].rating must be a number between 0 and 5",
   });
   assert.equal(validatePlaces(Array.from({ length: MAX_PLACES + 1 }, () => ({ name: "x" }))).ok, false);
+  assert.deepEqual(validatePlaces([{ name: "Test", role: "owner" }]), {
+    ok: false,
+    error: "places[0].role must be user or competitor",
+  });
 });
 
 test("pickBestResult prioritises a known address, then a Marfa result", () => {
@@ -43,6 +55,8 @@ test("pickBestResult prioritises a known address, then a Marfa result", () => {
       address: "209 West El Paso Street, Marfa, TX",
       rating: 4.6,
       place_id: "abc",
+      gps_coordinates: { latitude: 30.3095, longitude: -104.0206 },
+      reviews: 125,
     },
   ];
 
@@ -51,6 +65,9 @@ test("pickBestResult prioritises a known address, then a Marfa result", () => {
     address: "209 West El Paso Street, Marfa, TX",
     rating: 4.6,
     place_id: "abc",
+    latitude: 30.3095,
+    longitude: -104.0206,
+    reviews_count: 125,
   });
   assert.equal(pickBestResult([{ title: "Other", address: "Austin, TX" }]), null);
 });

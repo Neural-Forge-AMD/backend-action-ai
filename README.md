@@ -26,6 +26,17 @@ The first observation and repeated observations with the same price produce no e
 - A SerpApi API key for manual place enrichment
 - A Gemini API key from Google AI Studio for price recommendations
 
+## Target business network
+
+The application starts with the four required Marfa businesses in client state. These records identify the lookup targets; ratings, coordinates, review counts, and place IDs are never hard-coded and come from the live Maps lookup.
+
+| Role | Business | Address |
+| --- | --- | --- |
+| User business | Marfa Bread | 701 N Gonzales St, Marfa, TX 79843 |
+| Competitor | Dirty Water Bagels | 108 E El Paso St, Marfa, TX 79843 |
+| Competitor | Coyote Coffee | 317 W San Antonio St, Marfa, TX 79843 |
+| Competitor | Mutual Friends Coffee | 110 E El Paso St, Marfa, TX 79843 |
+
 ## Local setup
 
 1. Install dependencies:
@@ -61,6 +72,8 @@ The first observation and repeated observations with the same price produce no e
    ```bash
    npm run dev
    ```
+
+7. Open the app and sign in or create an account. Manual Maps enrichment requires an authenticated Supabase session. If email confirmation is enabled in the project, confirm the email before signing in.
 
 The local origins `http://localhost:5173` and `http://127.0.0.1:5173` are allowed automatically.
 
@@ -138,13 +151,14 @@ Authenticated request:
   "places": [
     {
       "name": "The Sentinel",
-      "address": "209 W El Paso St, Marfa, TX"
+      "address": "209 W El Paso St, Marfa, TX",
+      "role": "competitor"
     }
   ]
 }
 ```
 
-`fallback_data` is present and `true` when the external lookup fails or no suitable Marfa result is found.
+Each live match returns `name`, `address`, `rating`, `place_id`, `latitude`, `longitude`, `reviews_count`, and the supplied `role`. `fallback_data` is present and `true` when the external lookup fails or no suitable Marfa result is found; fallback responses do not invent Maps metadata.
 
 ## Checks
 

@@ -113,6 +113,10 @@ function fallbackResult(place: PlaceInput): PlaceResult {
     address: place.address ?? null,
     rating: place.rating ?? null,
     place_id: place.place_id ?? null,
+    latitude: null,
+    longitude: null,
+    reviews_count: null,
+    ...(place.role ? { role: place.role } : {}),
     fallback_data: true,
   };
 }
@@ -171,7 +175,9 @@ Deno.serve(async (request: Request) => {
     const chosen = rawResults
       ? pickBestResult(rawResults, place.address)
       : null;
-    results.push(chosen ?? fallbackResult(place));
+    results.push(chosen
+      ? { ...chosen, ...(place.role ? { role: place.role } : {}) }
+      : fallbackResult(place));
   }
 
   return jsonResponse({ results }, 200, headers);

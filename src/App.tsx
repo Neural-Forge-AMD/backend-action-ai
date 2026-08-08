@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
+import type { Session } from "@supabase/supabase-js";
 
 import {
   connectPriceChangeStream,
@@ -13,11 +14,14 @@ import {
 } from "./lib/supabase";
 
 const MAX_PLACES = 10;
+type BusinessRole = "user" | "competitor";
+type AuthMode = "sign-in" | "sign-up";
 
 interface DraftPlace {
   id: string;
   name: string;
   address: string;
+  role: BusinessRole;
 }
 
 interface PlaceResult {
@@ -25,11 +29,43 @@ interface PlaceResult {
   address: string | null;
   rating: number | null;
   place_id: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  reviews_count: number | null;
+  role?: BusinessRole;
   fallback_data?: boolean;
 }
 
-function newPlace(): DraftPlace {
-  return { id: crypto.randomUUID(), name: "", address: "" };
+const TARGET_BUSINESSES: ReadonlyArray<Omit<DraftPlace, "id">> = [
+  {
+    name: "Marfa Bread",
+    address: "701 N Gonzales St, Marfa, TX 79843",
+    role: "user",
+  },
+  {
+    name: "Dirty Water Bagels",
+    address: "108 E El Paso St, Marfa, TX 79843",
+    role: "competitor",
+  },
+  {
+    name: "Coyote Coffee",
+    address: "317 W San Antonio St, Marfa, TX 79843",
+    role: "competitor",
+  },
+  {
+    name: "Mutual Friends Coffee",
+    address: "110 E El Paso St, Marfa, TX 79843",
+    role: "competitor",
+  },
+];
+
+function newPlace(place?: Omit<DraftPlace, "id">): DraftPlace {
+  return {
+    id: crypto.randomUUID(),
+    name: place?.name ?? "",
+    address: place?.address ?? "",
+    role: place?.role ?? "competitor",
+  };
 }
 
 function errorMessage(error: unknown): string {
@@ -87,24 +123,60 @@ function LivePriceAlert({
 export default function App() {
   const [currentPage, setCurrentPage] = useState<"landing" | "app">("landing");
   // ponytail: using simple React state for view switching; react-router can be added if deep URL routing is required.
-  const [places, setPlaces] = useState<DraftPlace[]>(() => [newPlace()]);
+  const [places, setPlaces] = useState<DraftPlace[]>(() =>
+    TARGET_BUSINESSES.map((place) => newPlace(place))
+  );
   const [results, setResults] = useState<PlaceResult[]>([]);
   const [searchBusy, setSearchBusy] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [liveStatus, setLiveStatus] = useState<StreamStatus>("connecting");
   const [liveEvent, setLiveEvent] = useState<PriceChangePayload | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [authMode, setAuthMode] = useState<AuthMode>("sign-in");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authMessage, setAuthMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    const client = supabase;
+    if (!client) {
+      setAuthReady(true);
+      return;
+    }
+
+    let active = true;
+    void client.auth.getSession().then(({ data, error }) => {
+      if (!active) return;
+      if (error) setAuthError(error.message);
+      setSession(data.session);
+      setAuthReady(true);
+    });
+    const { data: { subscription } } = client.auth.onAuthStateChange((_event, nextSession) => {
+      if (!active) return;
+      setSession(nextSession);
+      setAuthReady(true);
+    });
+
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
+  }, []);
 
   useEffect(() => {
     if (!supabaseUrl || !supabaseAnonKey) return;
     return connectPriceChangeStream({
       supabaseUrl,
       anonKey: supabaseAnonKey,
-      accessToken: supabaseAnonKey,
+      accessToken: session?.access_token ?? supabaseAnonKey,
       onEvent: setLiveEvent,
       onStatus: setLiveStatus,
       onError: (error) => console.warn("Price change stream:", error.message),
     });
-  }, []);
+  }, [session?.access_token]);
 
   function updatePlace(id: string, field: "name" | "address", value: string) {
     setPlaces((current) =>
@@ -127,9 +199,14 @@ export default function App() {
     event.preventDefault();
     const client = supabase;
     if (!client) return;
+    if (!session) {
+      setSearchError("Sign in before requesting live place data.");
+      return;
+    }
 
-    const payload = places.map(({ name, address }) => ({
+    const payload = places.map(({ name, address, role }) => ({
       name: name.trim(),
+      role,
       ...(address.trim() ? { address: address.trim() } : {}),
     }));
     if (payload.some((place) => !place.name)) {
@@ -167,6 +244,41 @@ export default function App() {
     } finally {
       setSearchBusy(false);
     }
+  }
+
+  async function handleAuth(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const client = supabase;
+    if (!client) return;
+
+    setAuthBusy(true);
+    setAuthError(null);
+    setAuthMessage(null);
+    try {
+      if (authMode === "sign-in") {
+        const { error } = await client.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+      } else {
+        const { data, error } = await client.auth.signUp({ email, password });
+        if (error) throw error;
+        if (!data.session) {
+          setAuthMessage("Check your email to confirm the account, then sign in.");
+          setAuthMode("sign-in");
+        }
+      }
+    } catch (error) {
+      setAuthError(errorMessage(error));
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function handleSignOut() {
+    const client = supabase;
+    if (!client) return;
+    const { error } = await client.auth.signOut();
+    if (error) setAuthError(error.message);
+    setResults([]);
   }
 
   if (supabaseConfigError) {
@@ -262,6 +374,12 @@ export default function App() {
           </div>
         </div>
         <div className="account">
+          {session?.user.email && (
+            <span className="account-email" title={session.user.email}>
+              {session.user.email}
+            </span>
+          )}
+          {session && <button onClick={handleSignOut}>Sign out</button>}
           <span className={`live-status ${liveStatus}`}>
             <i aria-hidden="true" />
             {liveStatus === "listening" ? "Live" : liveStatus}
@@ -274,16 +392,89 @@ export default function App() {
       <div className="dashboard-grid">
         <section className="search-panel">
           <p className="eyebrow">New lookup</p>
-          <h1>Find the right Marfa locations.</h1>
+          <h1>Track the Marfa network.</h1>
           <p className="section-copy">
-            Add up to {MAX_PLACES} names. Known addresses make matching more accurate.
+            {session
+              ? `Refresh live Maps metadata for the four target businesses or add up to ${MAX_PLACES} places.`
+              : "Sign in to request live Maps metadata for the target business network."}
           </p>
 
+          {!authReady ? (
+            <div className="auth-gate" aria-live="polite">
+              <div className="loader" aria-label="Checking session" />
+            </div>
+          ) : !session ? (
+            <div className="auth-gate">
+              <div className="auth-tabs" role="tablist" aria-label="Account action">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={authMode === "sign-in"}
+                  className={authMode === "sign-in" ? "active" : ""}
+                  onClick={() => {
+                    setAuthMode("sign-in");
+                    setAuthError(null);
+                    setAuthMessage(null);
+                  }}
+                >
+                  Sign in
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={authMode === "sign-up"}
+                  className={authMode === "sign-up" ? "active" : ""}
+                  onClick={() => {
+                    setAuthMode("sign-up");
+                    setAuthError(null);
+                    setAuthMessage(null);
+                  }}
+                >
+                  Create account
+                </button>
+              </div>
+              <form onSubmit={handleAuth} className="auth-form">
+                <label>
+                  Email
+                  <input
+                    type="email"
+                    value={email}
+                    autoComplete="email"
+                    onChange={(event) => setEmail(event.target.value)}
+                    required
+                  />
+                </label>
+                <label>
+                  Password
+                  <input
+                    type="password"
+                    value={password}
+                    minLength={6}
+                    autoComplete={authMode === "sign-in" ? "current-password" : "new-password"}
+                    onChange={(event) => setPassword(event.target.value)}
+                    required
+                  />
+                </label>
+                <button className="primary-button" type="submit" disabled={authBusy}>
+                  {authBusy
+                    ? "Please wait…"
+                    : authMode === "sign-in" ? "Sign in" : "Create account"}
+                </button>
+                {authError && <p className="error-message" role="alert">{authError}</p>}
+                {authMessage && <p className="form-message" role="status">{authMessage}</p>}
+              </form>
+            </div>
+          ) : (
           <form onSubmit={handleSearch} className="places-form">
             <div className="place-list">
               {places.map((place, index) => (
                 <fieldset className="place-row" key={place.id}>
-                  <legend>Place {index + 1}</legend>
+                  <legend>
+                    Place {index + 1}
+                    <span className={`business-role ${place.role}`}>
+                      {place.role === "user" ? "Your business" : "Competitor"}
+                    </span>
+                  </legend>
                   <label>
                     Name <span>required</span>
                     <input
@@ -331,6 +522,7 @@ export default function App() {
             </div>
             {searchError && <p className="error-message" role="alert">{searchError}</p>}
           </form>
+          )}
         </section>
 
         <aside className="results-panel" aria-live="polite">
@@ -353,13 +545,27 @@ export default function App() {
                 <article className="result-card" key={`${result.place_id ?? result.name}-${index}`}>
                   <div className="result-title">
                     <h3>{result.name || places[index]?.name || "Unknown place"}</h3>
-                    {result.fallback_data
-                      ? <span className="badge fallback">Original data</span>
-                      : <span className="badge matched">Matched</span>}
+                    <div className="result-badges">
+                      <span className={`business-role ${result.role ?? places[index]?.role ?? "competitor"}`}>
+                        {(result.role ?? places[index]?.role) === "user" ? "Your business" : "Competitor"}
+                      </span>
+                      {result.fallback_data
+                        ? <span className="badge fallback">Original data</span>
+                        : <span className="badge matched">Matched</span>}
+                    </div>
                   </div>
                   <p>{result.address ?? "No address available"}</p>
                   <dl>
                     <div><dt>Rating</dt><dd>{result.rating?.toFixed(1) ?? "—"}</dd></div>
+                    <div><dt>Reviews</dt><dd>{result.reviews_count?.toLocaleString() ?? "—"}</dd></div>
+                    <div>
+                      <dt>Coordinates</dt>
+                      <dd>
+                        {result.latitude !== null && result.longitude !== null
+                          ? `${result.latitude.toFixed(5)}, ${result.longitude.toFixed(5)}`
+                          : "—"}
+                      </dd>
+                    </div>
                     <div><dt>Place ID</dt><dd title={result.place_id ?? undefined}>{result.place_id ?? "—"}</dd></div>
                   </dl>
                 </article>

@@ -2,11 +2,14 @@ export const MAX_PLACES = 10;
 export const MAX_NAME_LENGTH = 120;
 export const MAX_ADDRESS_LENGTH = 240;
 
+export type BusinessRole = "user" | "competitor";
+
 export interface PlaceInput {
   name: string;
   address?: string;
   rating?: number | null;
   place_id?: string;
+  role?: BusinessRole;
 }
 
 export interface PlaceResult {
@@ -14,6 +17,10 @@ export interface PlaceResult {
   address: string | null;
   rating: number | null;
   place_id: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  reviews_count: number | null;
+  role?: BusinessRole;
   /** True when the external lookup failed or no Marfa result matched. */
   fallback_data?: boolean;
 }
@@ -140,6 +147,14 @@ export function validatePlaces(value: unknown): ValidationResult {
     const placeId = optionalString(candidate.place_id, "place_id", index, 256);
     if (!placeId.ok) return placeId;
 
+    const role = candidate.role;
+    if (role !== undefined && role !== "user" && role !== "competitor") {
+      return {
+        ok: false,
+        error: `places[${index}].role must be user or competitor`,
+      };
+    }
+
     const rating = candidate.rating;
     if (
       rating !== undefined &&
@@ -157,6 +172,7 @@ export function validatePlaces(value: unknown): ValidationResult {
       ...(address.value ? { address: address.value } : {}),
       ...(rating === undefined ? {} : { rating: rating as number | null }),
       ...(placeId.value ? { place_id: placeId.value } : {}),
+      ...(role ? { role } : {}),
     });
   }
 
@@ -171,12 +187,24 @@ function ratingValue(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function nonNegativeInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : null;
+}
+
 function resultFromRecord(record: Record<string, unknown>): PlaceResult {
+  const coordinates = record.gps_coordinates && typeof record.gps_coordinates === "object"
+    ? record.gps_coordinates as Record<string, unknown>
+    : {};
   return {
     name: stringValue(record.title) ?? "",
     address: stringValue(record.address),
     rating: ratingValue(record.rating),
     place_id: stringValue(record.place_id),
+    latitude: ratingValue(coordinates.latitude),
+    longitude: ratingValue(coordinates.longitude),
+    reviews_count: nonNegativeInteger(record.reviews),
   };
 }
 
