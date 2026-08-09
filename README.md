@@ -21,7 +21,7 @@ The first observation and repeated observations with the same price produce no e
 ## Requirements
 
 - Node.js 20.19+ or 22.12+
-- A Supabase project with email/password authentication enabled
+- A Supabase project
 - Supabase CLI
 - A SerpApi API key for manual place enrichment
 - A Gemini API key from Google AI Studio for price recommendations
@@ -73,7 +73,7 @@ The application starts with the four required Marfa businesses in client state. 
    npm run dev
    ```
 
-7. Open the app and sign in or create an account. Manual Maps enrichment requires an authenticated Supabase session. If email confirmation is enabled in the project, confirm the email before signing in.
+7. Open the app and select **Explore Demo**. The public Supabase anon token authorizes the judge flow, so no account or sign-in is required.
 
 The local origins `http://localhost:5173` and `http://127.0.0.1:5173` are allowed automatically.
 
@@ -107,12 +107,12 @@ The migration is in `supabase/migrations/202608060001_price_change_events.sql`. 
 
 ## SSE contract
 
-The frontend opens this automatically with the public Supabase anon token, then reconnects with the authenticated user token after sign-in:
+The frontend opens this automatically with the public Supabase anon token:
 
 ```text
 GET /functions/v1/price-change-stream
 Accept: text/event-stream
-Authorization: Bearer <anon-or-authenticated-access-token>
+Authorization: Bearer <anon-token>
 ```
 
 The stream waits three seconds before its first database pull. It uses `Last-Event-ID` on reconnect, and one client generates each AI recommendation while all clients receive the stored result.
@@ -125,7 +125,7 @@ event: price-change
 data: {"type":"competitor_price_change","event_id":42,"competitor":"Coyote Coffee","item":"Latte","price":{"previous":4.5,"current":5,"currency":"USD","change":0.5,"percent":11.11,"direction":"increased"},"observed_at":"2026-08-06T12:00:00.000Z","source_url":null,"recommendation":{"text":"Hold your latte price and emphasize value, or test a breakfast bundle before matching the increase.","model":"gemini-3.5-flash-lite"}}
 ```
 
-The frontend consumes the stream with authenticated `fetch` rather than native `EventSource`, because native `EventSource` cannot attach the Supabase authorization header.
+The frontend consumes the stream with `fetch` rather than native `EventSource`, because native `EventSource` cannot attach the Supabase authorization header.
 
 ## Deploy
 
@@ -140,11 +140,11 @@ supabase functions deploy marfa-fetch-places
 supabase functions deploy price-change-stream
 ```
 
-Supabase supplies `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` to the Edge Function environment. `supabase/config.toml` enables gateway JWT verification. The live stream accepts a verified project anon token so the three-second judge flow starts immediately on page load; manual place enrichment still requires an authenticated user. AI enrichment is claimed and stored once per database event, so reconnects do not repeat the model call.
+Supabase supplies `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` to the Edge Function environment. `supabase/config.toml` enables gateway JWT verification. Both judge-facing Edge Functions accept a verified project anon token, so the live stream and manual place enrichment work without an account. AI enrichment is claimed and stored once per database event, so reconnects do not repeat the model call.
 
 ## Manual place-enrichment API
 
-Authenticated request:
+Public client request (with the Supabase anon token):
 
 ```json
 {
