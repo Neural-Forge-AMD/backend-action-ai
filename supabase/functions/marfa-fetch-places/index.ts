@@ -142,9 +142,10 @@ Deno.serve(async (request: Request) => {
     });
   }
 
-  // Supabase's gateway verifies the signature; this additionally rejects anon tokens.
+  // Supabase's gateway verifies the signature. The public anon role is allowed so
+  // hackathon judges can use the demo without creating an account.
   const role = jwtRole(request.headers.get("Authorization"));
-  if (role !== "authenticated" && role !== "service_role") {
+  if (role !== "anon" && role !== "authenticated" && role !== "service_role") {
     return jsonResponse({ error: "Authentication required" }, 401, headers);
   }
 

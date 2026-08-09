@@ -167,7 +167,6 @@ input:focus {
   background: rgba(255, 255, 255, 0.1);
 }
 
-.form-message,
 .error-message {
   margin: 0;
   padding: 14px 16px;
@@ -175,77 +174,10 @@ input:focus {
   font-size: 13px;
 }
 
-.form-message {
-  color: #ffffff;
-  background: #303030;
-  border-left: 3px solid #da291c;
-}
-
 .error-message {
   color: #ffffff;
   background: #303030;
   border-left: 3px solid #f13a2c;
-}
-
-.auth-gate {
-  display: grid;
-  gap: 24px;
-  min-height: 280px;
-  padding: 24px;
-  border: 1px solid #303030;
-  background: #222222;
-}
-
-.auth-gate > .loader {
-  place-self: center;
-}
-
-.auth-tabs {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  height: 42px;
-  border: 1px solid #303030;
-}
-
-.auth-tabs button {
-  border: 0;
-  color: #969696;
-  background: #181818;
-  font-size: 12px;
-  font-weight: 700;
-  text-transform: uppercase;
-}
-
-.auth-tabs button + button {
-  border-left: 1px solid #303030;
-}
-
-.auth-tabs button.active {
-  color: #ffffff;
-  background: #da291c;
-}
-
-.auth-form {
-  display: grid;
-  gap: 16px;
-}
-
-.auth-form .primary-button {
-  width: 100%;
-  margin-top: 8px;
-}
-
-.loader {
-  width: 36px;
-  height: 36px;
-  border: 2px solid #303030;
-  border-top-color: #da291c;
-  border-radius: 50%;
-  animation: spin 700ms linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
 }
 
 .topbar {
@@ -296,7 +228,6 @@ input:focus {
   letter-spacing: 0.5px;
 }
 
-.account button,
 .remove-button {
   border: none;
   color: #969696;
@@ -308,16 +239,8 @@ input:focus {
   transition: color 150ms ease;
 }
 
-.account button:hover,
 .remove-button:hover:not(:disabled) {
   color: #da291c;
-}
-
-.account-email {
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .live-status {
@@ -712,10 +635,6 @@ input:focus {
     min-height: 64px;
     padding-top: 12px;
     padding-bottom: 12px;
-  }
-
-  .account-email {
-    display: none !important;
   }
 
   .place-row {
