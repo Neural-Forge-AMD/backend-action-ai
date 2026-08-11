@@ -1,185 +1,279 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "jsr:@supabase/supabase-js@2";
 
-import {
-  pickBestResult,
-  type PlaceInput,
-  type PlaceResult,
-  validatePlaces,
-} from "../_shared/places.ts";
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+};
 
 const SERPAPI_BASE = "https://serpapi.com/search.json";
+
+/** Centroid of Marfa, TX for geographically-biased searches (zoom=14). */
 const MARFA_LL = "@30.3114,-104.0208,14z";
-const FETCH_TIMEOUT_MS = 8_000;
-const LOCAL_ORIGINS = new Set([
-  "http://localhost:5173",
-  "http://127.0.0.1:5173",
-]);
 
-function allowedOrigins(): Set<string> {
-  const configured = (Deno.env.get("ALLOWED_ORIGINS") ?? "")
-    .split(",")
-    .map((origin) => origin.trim())
-    .filter(Boolean);
-  return new Set([...LOCAL_ORIGINS, ...configured]);
+interface BusinessDef {
+  name: string;
+  address: string; // street only, e.g. "108 E El Paso St"
+  category: string; // "user" | "competitor"
+  search_term: string; // category keyword used as a fallback search
 }
 
-function corsHeaders(origin: string | null): Record<string, string> {
-  const headers: Record<string, string> = {
-    "Access-Control-Allow-Headers":
-      "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Max-Age": "86400",
-    "Vary": "Origin",
+const BUSINESSES: BusinessDef[] = [
+  { name: "Marfa Bread", address: "701 N Gonzales St", category: "user", search_term: "bakery" },
+  { name: "Coyote Coffee", address: "317 W San Antonio St", category: "competitor", search_term: "coffee" },
+  { name: "Dirty Water Bagels", address: "108 E El Paso St", category: "competitor", search_term: "bagels" },
+  { name: "Mutual Friends Coffee", address: "110 E El Paso St", category: "competitor", search_term: "coffee" },
+];
+
+// --------------------------------------------------------------------------
+// Helpers
+// --------------------------------------------------------------------------
+
+function adminClient() {
+  return createClient(
+    Deno.env.get("SUPABASE_URL") ?? "",
+    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "",
+  );
+}
+
+/** Map SerpApi price string ("$", "$$", etc.) to integer 1-4. */
+function mapPriceLevel(price: string | undefined): number | null {
+  if (!price) return null;
+  const level = price.length;
+  return level >= 1 && level <= 4 ? level : null;
+}
+
+/** Normalise a string for fuzzy comparison. */
+function norm(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * True when `expectedStreet` (e.g. "108 E El Paso St") is contained within
+ * the full returned address (e.g. "108 E El Paso St, Marfa, TX 79843"),
+ * ignoring punctuation, case and whitespace.
+ */
+function addressesMatch(expectedStreet: string, returnedAddress: string | undefined): boolean {
+  if (!returnedAddress) return false;
+  return norm(returnedAddress).includes(norm(expectedStreet));
+}
+
+// --------------------------------------------------------------------------
+// SerpApi search (multi-stage)
+// --------------------------------------------------------------------------
+
+interface LocalResult {
+  position?: number;
+  title?: string;
+  rating?: number;
+  reviews?: number;
+  price?: string;
+  type?: string;
+  address?: string;
+  hours?: string;
+  description?: string;
+  place_id?: string;
+  data_id?: string;
+  lsig?: string;
+  thumbnail?: string;
+  thumbnail_large?: string;
+  gps_coordinates?: { latitude: number; longitude: number };
+  links?: {
+    website?: string;
+    phone?: string;
+    directions?: string;
+    order?: string;
+    schedule?: string;
   };
-  if (origin && allowedOrigins().has(origin)) {
-    headers["Access-Control-Allow-Origin"] = origin;
-  }
-  return headers;
+  service_options?: { dine_in?: boolean; takeout?: boolean };
 }
 
-function jsonResponse(
-  body: Record<string, unknown>,
-  status: number,
-  headers: Record<string, string>,
-): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
-  });
-}
-
-function jwtRole(authorization: string | null): string | null {
-  const match = authorization?.match(/^Bearer\s+([^\s]+)$/i);
-  if (!match) return null;
-
-  try {
-    const payloadPart = match[1].split(".")[1];
-    if (!payloadPart) return null;
-    const base64 = payloadPart.replace(/-/g, "+").replace(/_/g, "/");
-    const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
-    const payload = JSON.parse(atob(padded)) as Record<string, unknown>;
-    if (typeof payload.exp === "number" && payload.exp <= Date.now() / 1000) return null;
-    return typeof payload.role === "string" ? payload.role : null;
-  } catch {
-    return null;
-  }
-}
-
-async function fetchRawResults(
-  place: PlaceInput,
+/** Run one SerpApi google_maps search, returning the raw local_results. */
+async function googleMapsSearch(
   apiKey: string,
-): Promise<Array<Record<string, unknown>> | null> {
+  q: string,
+  withLl: boolean,
+): Promise<LocalResult[]> {
   const params = new URLSearchParams({
     engine: "google_maps",
-    q: [place.name, place.address].filter(Boolean).join(" "),
-    ll: MARFA_LL,
+    q,
     type: "search",
     hl: "en",
     google_domain: "google.com",
     api_key: apiKey,
   });
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  if (withLl) params.set("ll", MARFA_LL);
 
-  try {
-    const response = await fetch(`${SERPAPI_BASE}?${params}`, {
-      signal: controller.signal,
-    });
-    if (!response.ok) {
-      console.warn("SerpApi HTTP error for", place.name, ":", response.status);
-      return null;
+  const res = await fetch(`${SERPAPI_BASE}?${params}`, {
+    method: "GET",
+    headers: { "Content-Type": "application/json" },
+  });
+
+  if (!res.ok) {
+    let errorMsg = `SerpApi request failed (${res.status})`;
+    try {
+      const body = await res.json() as { error: string };
+      if (body.error) errorMsg += `: ${body.error}`;
+    } catch {
+      /* ignore parse errors */
     }
-
-    const data = await response.json() as Record<string, unknown>;
-    if (data.error) {
-      console.warn("SerpApi error for", place.name, ":", data.error);
-      return null;
-    }
-
-    return Array.isArray(data.local_results) && data.local_results.length > 0
-      ? data.local_results as Array<Record<string, unknown>>
-      : null;
-  } catch (error) {
-    console.warn("SerpApi request failed for", place.name, ":", String(error));
-    return null;
-  } finally {
-    clearTimeout(timeout);
+    throw new Error(errorMsg);
   }
+
+  const data = await res.json() as { error?: string; local_results?: LocalResult[] };
+
+  if (data.error) {
+    throw new Error(`SerpApi error: ${data.error}`);
+  }
+
+  return data.local_results ?? [];
 }
 
-function fallbackResult(place: PlaceInput): PlaceResult {
-  return {
-    name: place.name,
-    address: place.address ?? null,
-    rating: place.rating ?? null,
-    place_id: place.place_id ?? null,
-    latitude: null,
-    longitude: null,
-    reviews_count: null,
-    ...(place.role ? { role: place.role } : {}),
-    fallback_data: true,
-  };
+/**
+ * Find a business on Google Maps using a staged search strategy.
+ *
+ * Exact-name queries with the `ll` location hint are unreliable (they can
+ * return 0 results for businesses that clearly exist), so we ladder through:
+ *   1. name only (with ll)
+ *   2. name only (nationwide, no ll)
+ *   3. category keyword + "Marfa" (with ll) — the most reliable stage
+ *
+ * Each stage scans ALL results for an exact street-address match.
+ * Returns null if no stage finds an address match.
+ */
+async function findPlace(
+  apiKey: string,
+  biz: BusinessDef,
+): Promise<LocalResult | null> {
+  const stages: Array<{ q: string; withLl: boolean }> = [
+    { q: biz.name, withLl: true },
+    { q: biz.name, withLl: false },
+    { q: `${biz.search_term} Marfa`, withLl: true },
+  ];
+
+  for (const stage of stages) {
+    const results = await googleMapsSearch(apiKey, stage.q, stage.withLl);
+    for (const r of results) {
+      if (addressesMatch(biz.address, r.address)) {
+        return r;
+      }
+    }
+  }
+  return null;
 }
 
-Deno.serve(async (request: Request) => {
-  const origin = request.headers.get("Origin");
-  const headers = corsHeaders(origin);
+// --------------------------------------------------------------------------
+// Entry point
+// --------------------------------------------------------------------------
 
-  if (origin && !allowedOrigins().has(origin)) {
-    return jsonResponse({ error: "Origin is not allowed" }, 403, headers);
-  }
-  if (request.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers });
-  }
-  if (request.method !== "POST") {
-    return new Response(JSON.stringify({ error: "Method not allowed" }), {
-      status: 405,
-      headers: {
-        ...headers,
-        "Allow": "POST, OPTIONS",
-        "Content-Type": "application/json; charset=utf-8",
-      },
-    });
-  }
-
-  // Supabase's gateway verifies the signature. The public anon role is allowed so
-  // hackathon judges can use the demo without creating an account.
-  const role = jwtRole(request.headers.get("Authorization"));
-  if (role !== "anon" && role !== "authenticated" && role !== "service_role") {
-    return jsonResponse({ error: "Authentication required" }, 401, headers);
+Deno.serve(async (req: Request) => {
+  // CORS preflight
+  if (req.method === "OPTIONS") {
+    return new Response(null, { status: 200, headers: corsHeaders });
   }
 
   const apiKey = Deno.env.get("SERPAPI_KEY");
   if (!apiKey) {
-    return jsonResponse({ error: "Server is missing SERPAPI_KEY" }, 500, headers);
+    return new Response(
+      JSON.stringify({
+        error:
+          "SERPAPI_KEY not configured. Run: suggest_action with store_secret_action for SERPAPI_KEY.",
+      }),
+      {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      },
+    );
   }
 
-  let body: unknown;
   try {
-    body = await request.json();
-  } catch {
-    return jsonResponse({ error: "Invalid JSON body" }, 400, headers);
-  }
+    const supabase = adminClient();
+    const results: {
+      name: string;
+      status: "ok" | "not_found" | "error";
+      error?: string;
+    }[] = [];
 
-  const placesValue = body && typeof body === "object"
-    ? (body as Record<string, unknown>).places
-    : undefined;
-  const validation = validatePlaces(placesValue);
-  if (!validation.ok) {
-    return jsonResponse({ error: validation.error }, 400, headers);
-  }
+    for (const biz of BUSINESSES) {
+      try {
+        const r = await findPlace(apiKey, biz);
 
-  // Keep requests serial to avoid short bursts against SerpApi's quota.
-  const results: PlaceResult[] = [];
-  for (const place of validation.places) {
-    const rawResults = await fetchRawResults(place, apiKey);
-    const chosen = rawResults
-      ? pickBestResult(rawResults, place.address)
-      : null;
-    results.push(chosen
-      ? { ...chosen, ...(place.role ? { role: place.role } : {}) }
-      : fallbackResult(place));
-  }
+        if (!r) {
+          // Genuinely no Google Maps listing found — record known data only.
+          const { error } = await supabase
+            .schema("marfa")
+            .from("businesses")
+            .upsert(
+              {
+                place_id: `known:${biz.name.toLowerCase().replace(/\s+/g, "-")}`,
+                name: biz.name,
+                category: biz.category,
+                display_name: biz.name,
+                formatted_address: `${biz.address}, Marfa, TX 79843`,
+                rating: null,
+                user_rating_count: null,
+                last_fetched_at: new Date().toISOString(),
+              },
+              { onConflict: "place_id" },
+            );
+          if (error) throw new Error(error.message);
+          results.push({ name: biz.name, status: "not_found" });
+          continue;
+        }
 
-  return jsonResponse({ results }, 200, headers);
+        const gps = r.gps_coordinates;
+        const thumbnail = r.thumbnail_large ?? r.thumbnail ?? null;
+
+        const row = {
+          place_id: r.place_id ?? r.data_id ?? r.lsig ?? biz.name,
+          name: biz.name,
+          category: biz.category,
+          display_name: r.title ?? biz.name,
+          formatted_address: r.address ?? null,
+          national_phone_number: r.links?.phone ?? null,
+          website_uri: r.links?.website ?? null,
+          rating: r.rating ?? null,
+          user_rating_count: r.reviews ?? null,
+          price_level: mapPriceLevel(r.price),
+          regular_opening_hours: r.hours
+            ? { source: "serpapi", display: r.hours }
+            : null,
+          reviews: [],
+          photo_urls: thumbnail ? [thumbnail] : [],
+          lat: gps?.latitude ?? null,
+          lng: gps?.longitude ?? null,
+          last_fetched_at: new Date().toISOString(),
+        };
+
+        // Upsert: onConflict maps to the unique constraint on place_id.
+        const { error } = await supabase
+          .schema("marfa")
+          .from("businesses")
+          .upsert(row, { onConflict: "place_id" });
+
+        if (error) throw new Error(error.message);
+        results.push({ name: biz.name, status: "ok" });
+      } catch (err) {
+        results.push({
+          name: biz.name,
+          status: "error",
+          error: String(err),
+        });
+      }
+    }
+
+    const allOk = results.every((r) => r.status === "ok");
+
+    return new Response(JSON.stringify({ ok: allOk, results }), {
+      status: allOk ? 200 : 207,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  } catch (err) {
+    return new Response(JSON.stringify({ error: String(err) }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
 });
