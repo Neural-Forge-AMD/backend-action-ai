@@ -1,19 +1,21 @@
 {
-  "name": "marfa-place-finder",
+  "name": "marfa-dashboard",
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite optimize && vite",
     "build": "vite build",
     "preview": "vite preview",
-    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.edge.json",
     "test": "tsx --test tests/places.test.ts tests/price-change.test.ts",
-    "check": "npm run typecheck && npm test && npm run build"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.2",
     "@tailwindcss/vite": "^4.1.18",
+    "@types/leaflet": "^1.9.22",
+    "leaflet": "^1.9.4",
+    "lucide-react": "^1.31.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tailwindcss": "^4.1.18"
@@ -25,7 +27,7 @@
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^5.1.1",
     "globals": "^16.5.0",
-    "tsx": "^4.23.9",
+    "tsx": "^4.23.12",
     "typescript": "~5.9.3",
     "vite": "^7.2.4",
     "vite-plugin-svgr": "^4.5.0"

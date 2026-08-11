@@ -3,6 +3,9 @@ const LOCAL_ORIGINS = new Set([
   "http://127.0.0.1:5173",
 ]);
 
+/** Ephemeral preview environments served by the platform. */
+const PLATFORM_ORIGIN_SUFFIXES = [".nativelyai.app", ".webcontainer-api.io"];
+
 function configuredOrigins(): Set<string> {
   const configured = (Deno.env.get("ALLOWED_ORIGINS") ?? "")
     .split(",")
@@ -11,8 +14,17 @@ function configuredOrigins(): Set<string> {
   return new Set([...LOCAL_ORIGINS, ...configured]);
 }
 
+function isPlatformPreviewOrigin(origin: string): boolean {
+  try {
+    const hostname = new URL(origin).hostname;
+    return PLATFORM_ORIGIN_SUFFIXES.some((suffix) => hostname.endsWith(suffix));
+  } catch {
+    return false;
+  }
+}
+
 export function isAllowedOrigin(origin: string | null): boolean {
-  return !origin || configuredOrigins().has(origin);
+  return !origin || isPlatformPreviewOrigin(origin) || configuredOrigins().has(origin);
 }
 
 export function corsHeaders(
@@ -26,7 +38,7 @@ export function corsHeaders(
     "Access-Control-Max-Age": "86400",
     "Vary": "Origin",
   };
-  if (origin && configuredOrigins().has(origin)) {
+  if (origin && (isPlatformPreviewOrigin(origin) || configuredOrigins().has(origin))) {
     headers["Access-Control-Allow-Origin"] = origin;
   }
   return headers;
